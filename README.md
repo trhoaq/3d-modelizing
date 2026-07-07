@@ -24,6 +24,7 @@ Or manually:
 ```bash
 git clone --recursive https://github.com/naver/mast3r.git repos/mast3r
 cd repos/mast3r
+pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 pip install -r dust3r/requirements.txt
 cd ../..
