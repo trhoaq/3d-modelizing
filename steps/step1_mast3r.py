@@ -119,11 +119,9 @@ def run_step1(input_dir: str, output_dir: str,
     # Extract scene data
     print(f"\n  Extracting scene data...")
     scene_data = {
-        'imgs': to_numpy(scene.imgs),
-        'pts3d': to_numpy(scene.get_pts3d()),
+        'imgs': np.array(to_numpy(scene.imgs)),
         'focals': to_numpy(scene.get_focals()),
         'poses': to_numpy(scene.get_im_poses()),
-        'confidences': to_numpy(scene.get_masks()),
         'image_files': image_files,
     }
     np.savez(str(output_path / "scene.npz"), **scene_data)

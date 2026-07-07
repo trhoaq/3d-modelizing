@@ -63,6 +63,9 @@ def run_step2(step1_output: str, output_dir: str,
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Free GPU memory before starting
+    torch.cuda.empty_cache()
+
     # Try to load scene object for TSDF
     scene_path = Path(step1_output) / "scene.pt"
     scene = None
@@ -75,53 +78,57 @@ def run_step2(step1_output: str, output_dir: str,
             # Try TSDF post-processing
             print(f"\n  Applying TSDF post-processing...")
             tsdf = TSDFPostProcess(scene, TSDF_thresh=tsdf_thresh)
-            pts3d, _, confs = to_numpy(tsdf.get_dense_pts3d(clean_depth=clean_depth))
-            imgs = to_numpy(scene.imgs)
+            pts3d, _, confs = to_numpy(tsdf.get_dense_pts3d(clean_depth=clean_depth, subsample=12))
+            colors = to_numpy(scene.imgs)
             print(f"  TSDF processing complete")
 
         except Exception as e:
             print(f"  Warning: TSDF processing failed: {e}")
-            print(f"  Falling back to scene.npz")
+            print(f"  Extracting sparse points directly from scene object...")
+            torch.cuda.empty_cache()
             scene = None
 
-    # Fallback: load from npz
-    if scene is None:
-        print(f"\n  Loading from scene.npz...")
-        scene_data = np.load(str(Path(step1_output) / "scene.npz"))
-        pts3d = scene_data['pts3d']
-        imgs = scene_data['imgs']
-        confs = scene_data.get('confidences', scene_data.get('confidence_masks'))
+    # Fallback: extract sparse points from scene object on CPU
+    if scene is None and scene_path.exists():
+        try:
+            scene = torch.load(str(scene_path), map_location='cpu', weights_only=False)
+            print(f"  Loaded scene object on CPU")
+            from dust3r.utils.device import to_numpy
+            pts3d = to_numpy(scene.get_sparse_pts3d())
+            colors = [np.array(c) for c in scene.get_pts3d_colors()]
+            confs = [np.full(p.shape[0], fill_value=5.0, dtype=float) for p in pts3d]
+            print(f"  Extracted sparse points from scene object")
 
-        # Ensure proper shapes
-        if pts3d.ndim == 4:
-            pts3d = pts3d  # Already (N, H, W, 3)
-        if imgs.ndim == 4:
-            imgs = imgs  # Already (N, H, W, 3)
+        except Exception as e:
+            print(f"  Warning: Scene fallback also failed: {e}")
+            raise
+
+    # Ensure pts3d is a list for per-view iteration
+    if not isinstance(pts3d, (list, tuple)):
+        pts3d = [pts3d[i] for i in range(len(pts3d))]
+    if not isinstance(confs, (list, tuple)):
+        confs = [confs[i] for i in range(len(confs))]
+    if not isinstance(colors, (list, tuple)):
+        colors = [colors[i] for i in range(len(colors))]
 
     # Filter by confidence and extract points/colors
     print(f"\n  Extracting points with confidence > {min_conf}...")
-    points = []
-    colors = []
+    all_points = []
+    all_colors = []
 
     for i in range(len(pts3d)):
-        if confs[i].ndim == 2:
-            mask = confs[i] > min_conf
-        else:
-            mask = confs[i] > min_conf
-
+        mask = confs[i] > min_conf
         if mask.any():
-            pts_i = pts3d[i][mask]
-            col_i = imgs[i][mask]
-            points.append(pts_i.reshape(-1, 3))
-            colors.append(col_i.reshape(-1, 3))
+            all_points.append(pts3d[i][mask].reshape(-1, 3))
+            all_colors.append(colors[i][mask].reshape(-1, 3))
 
-    if points:
-        points = np.concatenate(points)
-        colors = np.concatenate(colors)
+    if all_points:
+        points = np.concatenate(all_points)
+        colors = np.concatenate(all_colors)
     else:
         print(f"  Warning: No points with confidence > {min_conf}, using all points")
-        points = pts3d.reshape(-1, 3)
-        colors = imgs.reshape(-1, 3)
+        points = np.concatenate(pts3d).reshape(-1, 3)
+        colors = np.concatenate(colors).reshape(-1, 3)
 
     # Remove invalid points
     print(f"\n  Cleaning point cloud...")
